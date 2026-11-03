@@ -592,17 +592,21 @@ function findLineCoords(line, lz) {
     if (a.v >= 5 && a.v <= 12 && b.v >= 82 && b.v <= 88) found.push({ sys: "Geográficas (GMS)", x: -b.v, y: a.v, from: "WGS84" });
   }
   const rest = line.replace(reD, " ");
-  const toks = [...rest.matchAll(/-?\d[\d.,]*\d|-?\d/g)].map(t => { const neg = t[0][0] === "-", r = neg ? t[0].slice(1) : t[0]; return { v: (neg ? -1 : 1) * parseNum(r), dec: /[.,]\d+$/.test(r) ? r.split(/[.,]/).pop().length : 0 }; }).filter(t => isFinite(t.v));
+  const toks = [...rest.matchAll(/-?\d[\d.,]*\d|-?\d/g)].map(t => { const neg = t[0][0] === "-", r = neg ? t[0].slice(1) : t[0]; const v = (neg ? -1 : 1) * parseNum(r), dec = /[.,]\d+$/.test(r) ? r.split(/[.,]/).pop().length : 0;
+    // kilómetros con 3 decimales (ej. 274.298 = 274 298 m), formato usual en resoluciones de la Dirección de Agua
+    const km = dec === 3 && v >= 80 && v < 1300;
+    return { v, dec, km, m: km ? Math.round(v * 1000 * 1000) / 1000 : v }; }).filter(t => isFinite(t.v));
   const isE = v => v >= 270000 && v <= 700000, isN = v => v >= 880000 && v <= 1260000;
   const isLat = t => Math.abs(t.v) >= 5 && Math.abs(t.v) <= 12 && t.dec >= 4, isLon = t => Math.abs(t.v) >= 82 && Math.abs(t.v) <= 88 && t.dec >= 4;
-  const isLE = v => v >= 150000 && v <= 720000, isLN = v => v >= 80000 && v <= 480000;
+  const lamb = (p, q) => { const X = Math.max(p, q), Y = Math.min(p, q); return Y >= 150000 && Y <= 380000 && X >= 300000 && X <= 700000 ? [X, Y] : null; };
   for (let i = 0; i + 1 < toks.length; i++) {
     const a = toks[i], b = toks[i + 1];
-    if (isE(a.v) && isN(b.v)) { found.push({ sys: "CRTM05", x: a.v, y: b.v, from: "CRTM05" }); i++; }
-    else if (isN(a.v) && isE(b.v)) { found.push({ sys: "CRTM05", x: b.v, y: a.v, from: "CRTM05" }); i++; }
+    const u = (a.km || b.km) ? " (km)" : "";
+    if (isE(a.m) && isN(b.m)) { found.push({ sys: "CRTM05" + u, x: a.m, y: b.m, from: "CRTM05" }); i++; }
+    else if (isN(a.m) && isE(b.m)) { found.push({ sys: "CRTM05" + u, x: b.m, y: a.m, from: "CRTM05" }); i++; }
     else if (isLat(a) && isLon(b)) { found.push({ sys: "Geográficas", x: -Math.abs(b.v), y: Math.abs(a.v), from: "WGS84" }); i++; }
     else if (isLon(a) && isLat(b)) { found.push({ sys: "Geográficas", x: -Math.abs(a.v), y: Math.abs(b.v), from: "WGS84" }); i++; }
-    else if (lz !== "no" && isLE(a.v) && isLN(b.v)) { found.push({ sys: "Lambert " + (lz === "N" ? "Norte" : "Sur"), x: a.v, y: b.v, from: lz }); i++; }
+    else if (lz !== "no" && a.km === b.km && lamb(a.m, b.m)) { const [X, Y] = lamb(a.m, b.m); found.push({ sys: "Lambert " + (lz === "N" ? "Norte" : "Sur") + u, x: X, y: Y, from: lz }); i++; }
   }
   return found;
 }
