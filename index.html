@@ -81,6 +81,23 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .tbl th,.tbl td{padding:5px 8px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line)}
 .tbl th{position:sticky;top:0;background:var(--sunk);font-weight:500}
 .tbl td:nth-child(3),.tbl th:nth-child(3){text-align:left}
+.results{margin-top:20px}
+.results h3{font:700 18px/1.2 var(--display);margin:0 0 4px}
+.results .sub{color:var(--muted);font-size:13px;margin:0 0 14px}
+.dls{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.dlb{display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-align:left;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:14px;cursor:pointer;color:var(--ink);font:inherit}
+.dlb:hover:not(:disabled){border-color:var(--accent)}
+.dlb:disabled{cursor:default;opacity:.55}
+.dlb .fx{font:600 11px var(--mono);letter-spacing:.06em;color:var(--accent);background:var(--accent-soft);border-radius:4px;padding:2px 6px}
+.dlb b{font:600 15px var(--body)}
+.dlb span.sz{font:12px var(--mono);color:var(--muted)}
+.dlb .act{margin-top:6px;font:600 13px var(--body);color:var(--accent)}
+.dlb.all{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.dlb.all .fx{background:rgba(255,255,255,.2);color:inherit}
+.dlb.all .act,.dlb.all span.sz{color:inherit}
+details.more{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
+details.more summary{cursor:pointer;font:600 14px var(--body)}
+details.more[open] summary{margin-bottom:10px}
 textarea{font:13px/1.5 var(--mono);color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;width:100%;resize:vertical}
 .radios{display:flex;flex-wrap:wrap;gap:6px}
 .radios label{font:500 13px var(--body);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer;background:var(--bg)}
@@ -342,16 +359,12 @@ const TOOLS = [
      return [{ name: files.length === 1 ? base(files[0].name) + ".pdf" : "imagenes.pdf", bytes: await d.save() }];
    } },
 
- { g: "Convertir", id: "ocr", glyph: "OCR", name: "Leer escaneados (OCR)", desc: "Reconocé el texto de PDF escaneados: Word, TXT, PDF buscable y coordenadas a GeoJSON.", accept: "pdf", multi: false,
+ { g: "Convertir", id: "ocr", glyph: "OCR", name: "Leer escaneados (OCR)", desc: "Sacá el texto de PDF escaneados a Word, TXT o PDF buscable, y las coordenadas a GeoJSON.", accept: "pdf", multi: false,
    opts: () => `
-    <div class="opt"><span class="lb">Idioma del documento</span><div class="radios"><label><input type="radio" name="lang" value="spa" checked>Español</label><label><input type="radio" name="lang" value="spa+eng">Esp + Ing</label><label><input type="radio" name="lang" value="eng">Inglés</label></div></div>
-    <div class="opt"><span class="lb">Páginas a leer con OCR</span><div class="radios"><label><input type="radio" name="scope" value="scan" checked>Solo escaneadas</label><label><input type="radio" name="scope" value="all">Todas</label></div><span class="hint">"Solo escaneadas" toma directo el texto de las páginas digitales: es más rápido y exacto.</span></div>
-    <div class="opt"><span class="lb">Calidad</span><div class="radios"><label><input type="radio" name="q" value="n" checked>Normal</label><label><input type="radio" name="q" value="a">Alta · letra pequeña</label></div></div>
-    <div class="opt"><span class="lb">Coordenadas a GeoJSON (CRTM05)</span><div class="radios"><label><input type="radio" name="geo" value="pts" checked>Puntos</label><label><input type="radio" name="geo" value="pol">Polígono por página</label><label><input type="radio" name="geo" value="no">No buscar</label></div><span class="hint">Detecta CRTM05, Lambert y geográficas (grados decimales o grados, minutos y segundos) y las convierte a CRTM05. La tabla de atributos lleva documento y página.</span></div>
-    <div class="opt"><span class="lb">Si aparecen coordenadas Lambert, son de</span><div class="radios"><label><input type="radio" name="lz" value="N" checked>Lambert Norte</label><label><input type="radio" name="lz" value="S">Lambert Sur</label><label><input type="radio" name="lz" value="no">No hay Lambert</label></div></div>
-    <p class="note">La primera vez descarga el diccionario del idioma y tarda más. Cada página escaneada toma entre 5 y 30 segundos según el equipo. El resultado sale en Word, PDF buscable, TXT y, si hay coordenadas, GeoJSON.</p>`,
+    <div class="opt"><span class="lb">Idioma del documento</span><div class="radios"><label><input type="radio" name="lang" value="spa" checked>Español</label><label><input type="radio" name="lang" value="spa+eng">Español + inglés</label><label><input type="radio" name="lang" value="eng">Inglés</label></div></div>
+    <p class="note">Sirve para PDF escaneados y digitales. Las páginas digitales se leen directo; las escaneadas, con OCR. La primera vez tarda más porque descarga el diccionario.</p>`,
    run: async (step) => {
-     const f = files[0], langs = val("lang").split("+"), all = val("scope") === "all", sc = (val("q") === "a" ? 300 : 200) / 72;
+     const f = files[0], langs = val("lang").split("+"), all = false, sc = 300 / 72;
      const pdf = await loadJs(f.buf), N = pdf.numPages, out = [];
      let worker = null, cur = 1;
      try {
@@ -390,7 +403,7 @@ const TOOLS = [
      const nm = base(f.name);
      const text = out.map((p, i) => (N > 1 ? `--- Página ${i + 1} ---\n\n` : "") + p.paras.join("\n\n")).join("\n\n").trim();
      if (!text) throw new Error("No se encontró texto. Probá con calidad Alta o revisá que el escaneo se lea bien.");
-     const res = [{ name: nm + ".docx", label: "Word", bytes: await buildDocx(out.map(p => p.paras)) }];
+     const res = [{ name: nm + ".docx", label: "Word", fx: "DOCX", bytes: await buildDocx(out.map(p => p.paras)) }];
      if (out.some(p => p.words)) {
        const src = await loadLib(f.buf.slice(0)), d = await PDFDocument.create(), font = await d.embedFont(StandardFonts.Helvetica);
        const cp = await d.copyPages(src, src.getPageIndices());
@@ -406,21 +419,16 @@ const TOOLS = [
            pg.drawText(t, { x: ax, y: ay, size, font, opacity: 0, rotate: degrees(Math.atan2(by - ay, bx - ax) * 180 / Math.PI) });
          }
        });
-       res.push({ name: nm + "_buscable.pdf", label: "PDF buscable", bytes: await d.save() });
-     } else res.push({ name: nm + ".pdf", label: "PDF", bytes: new Uint8Array(f.buf.slice(0)), note: "El PDF ya tenía texto en todas sus páginas: no necesita versión buscable, se entrega igual." });
-     res.push({ name: nm + ".txt", label: "TXT", bytes: new TextEncoder().encode(text) });
+       res.push({ name: nm + "_buscable.pdf", label: "PDF buscable", fx: "PDF", bytes: await d.save() });
+     } else res.push({ name: nm + ".pdf", label: "PDF", fx: "PDF", bytes: new Uint8Array(f.buf.slice(0)), note: "El PDF ya tenía texto en todas sus páginas: no necesita versión buscable, se entrega igual." });
+     res.push({ name: nm + ".txt", label: "Texto", fx: "TXT", bytes: new TextEncoder().encode(text) });
      res.copyText = text;
-     const geo = val("geo");
-     if (geo !== "no") {
-       await loadScript(PROJ, "proj4");
-       const pts = findAllCoords(out.map(p => p.lines || []), val("lz"));
-       if (!pts.length) res.push({ name: "", skip: true, note: "No se encontraron coordenadas en el documento." });
-       else {
-         const gj = buildGeoJSON(pts, f.name, geo);
-         res.push({ name: nm + "_coordenadas.geojson", label: "GeoJSON", bytes: new TextEncoder().encode(JSON.stringify(gj, null, 1)),
-           note: `Coordenadas: ${pts.length} punto(s)${geo === "pol" ? `, ${gj.features.length} polígono(s)` : ""}. Revisá la tabla: algunos números del texto pueden parecer coordenadas sin serlo.` });
-         res.table = pts;
-       }
+     await loadScript(PROJ, "proj4");
+     const pts = findAllCoords(out.map(p => p.lines || []), "N");
+     if (!pts.length) res.push({ name: nm + "_coordenadas.geojson", label: "GeoJSON", fx: "GEOJSON", disabled: "No se encontraron coordenadas" });
+     else {
+       res.push({ name: nm + "_coordenadas.geojson", label: "GeoJSON", fx: "GEOJSON", bytes: new TextEncoder().encode(JSON.stringify(buildGeoJSON(pts, f.name), null, 1)) });
+       res.table = pts;
      }
      return res;
    } },
@@ -563,8 +571,17 @@ function parseNum(t) {
   if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) return +t.replace(/,/g, "");
   return +t.replace(",", ".");
 }
+function normLine(l) {
+  // letras que el OCR confunde con números, solo dentro de bloques casi todo numéricos
+  l = l.replace(/[\dOoIl|SB][\dOoIl|SB.,]{3,}[\dOoIl|SB]/g, t => (t.match(/\d/g) || []).length >= t.replace(/[.,]/g, "").length * 0.6 ? t.replace(/[Oo]/g, "0").replace(/[Il|]/g, "1").replace(/S/g, "5").replace(/B/g, "8") : t);
+  // miles separados por espacio: "1 123 456,78" y "456 789,12"
+  l = l.replace(/(^|[^\d.,])1 ([0-2]\d{2}) (\d{3})(?![\d])/g, "$11$2$3");
+  l = l.replace(/(^|[^\d.,])(\d{3}) (\d{3})(?![\d])/g, "$1$2$3");
+  return l;
+}
 const inCR = (e, n) => e >= 270000 && e <= 700000 && n >= 880000 && n <= 1260000;
 function findLineCoords(line, lz) {
+  line = normLine(line);
   const found = [];
   // grados, minutos, segundos
   const dms = [], reD = /(\d{1,2})\s*[°º˚]\s*(\d{1,2})\s*['’′´]\s*(\d{1,2}(?:[.,]\d+)?)\s*(?:["”″]|'')?\s*([NSOEW])?/gi;
@@ -591,33 +608,34 @@ function findLineCoords(line, lz) {
 }
 function findAllCoords(pagesLines, lz) {
   const pts = [];
-  pagesLines.forEach((lines, pi) => lines.forEach(line => {
-    for (const c of findLineCoords(line, lz)) {
-      const [e, n] = c.from === "CRTM05" ? [c.x, c.y] : proj4(DEF[c.from], DEF.CRTM05, [c.x, c.y]);
-      if (!inCR(e, n)) continue;
-      pts.push({ pagina: pi + 1, sistema: c.sys, x: c.x, y: c.y, este: +e.toFixed(3), norte: +n.toFixed(3), texto: line.trim().slice(0, 200) });
-    }
-  }));
+  const add = (pi, c, line) => {
+    const [e, n] = c.from === "CRTM05" ? [c.x, c.y] : proj4(DEF[c.from], DEF.CRTM05, [c.x, c.y]);
+    if (!inCR(e, n)) return;
+    pts.push({ pagina: pi + 1, sistema: c.sys, x: c.x, y: c.y, este: +e.toFixed(3), norte: +n.toFixed(3), texto: line.trim().slice(0, 200) });
+  };
+  pagesLines.forEach((lines, pi) => {
+    let hits = 0;
+    lines.forEach(line => { for (const c of findLineCoords(line, lz)) { add(pi, c, line); hits++; } });
+    if (hits) return;
+    // Respaldo: Este y Norte en líneas o columnas separadas -> se emparejan en orden
+    const E = [], N = [];
+    lines.forEach(line => {
+      for (const t of normLine(line).match(/\d[\d.,]*\d/g) || []) {
+        const v = parseNum(t);
+        if (v >= 270000 && v <= 700000) E.push({ v, line }); else if (v >= 880000 && v <= 1260000) N.push({ v, line });
+      }
+    });
+    const k = Math.min(E.length, N.length);
+    for (let i = 0; i < k; i++) add(pi, { sys: "CRTM05", x: E[i].v, y: N[i].v, from: "CRTM05" }, E[i].line + " / " + N[i].line);
+  });
   pts.forEach((p, i) => p.orden = i + 1);
   return pts;
 }
-function buildGeoJSON(pts, doc, mode) {
-  const crs = { type: "name", properties: { name: "urn:ogc:def:crs:EPSG::5367" } };
-  if (mode !== "pol") return { type: "FeatureCollection", name: base(doc) + "_coordenadas", crs, features: pts.map(p => ({ type: "Feature",
-    properties: { documento: doc, pagina: p.pagina, orden: p.orden, sistema_origen: p.sistema, x_origen: p.x, y_origen: p.y, este: p.este, norte: p.norte, texto: p.texto },
-    geometry: { type: "Point", coordinates: [p.este, p.norte] } })) };
-  const byPage = {}; pts.forEach(p => (byPage[p.pagina] = byPage[p.pagina] || []).push(p));
-  const features = [];
-  for (const [pg, ps] of Object.entries(byPage)) {
-    let ring = ps.map(p => [p.este, p.norte]);
-    if (ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring.pop();
-    if (ring.length < 3) continue;
-    let a = 0, per = 0;
-    for (let i = 0; i < ring.length; i++) { const [x1, y1] = ring[i], [x2, y2] = ring[(i + 1) % ring.length]; a += x1 * y2 - x2 * y1; per += Math.hypot(x2 - x1, y2 - y1); }
-    features.push({ type: "Feature", properties: { documento: doc, pagina: +pg, vertices: ring.length, area_m2: +Math.abs(a / 2).toFixed(2), area_ha: +(Math.abs(a / 2) / 10000).toFixed(4), perimetro_m: +per.toFixed(2) },
-      geometry: { type: "Polygon", coordinates: [[...ring, ring[0]]] } });
-  }
-  return { type: "FeatureCollection", name: base(doc) + "_poligonos", crs, features };
+function buildGeoJSON(pts, doc) {
+  return { type: "FeatureCollection", name: base(doc) + "_coordenadas", crs: { type: "name", properties: { name: "urn:ogc:def:crs:EPSG::5367" } },
+    features: pts.map(p => ({ type: "Feature",
+      properties: { documento: doc, pagina: p.pagina, orden: p.orden, sistema_origen: p.sistema, x_origen: p.x, y_origen: p.y, este: p.este, norte: p.norte, texto: p.texto },
+      geometry: { type: "Point", coordinates: [p.este, p.norte] } })) };
 }
 
 /* ---------- vistas ---------- */
@@ -653,9 +671,9 @@ function openTool(id) {
         <button class="go" id="go" disabled>${tool.name}</button>
         <div class="bar" id="bar" hidden><i></i></div>
         <div class="status" id="st"></div>
-        <div id="res"></div>
       </aside>
-    </div>`;
+    </div>
+    <section class="panel results" id="res" hidden></section>`;
   try { history.replaceState(null, "", "#" + id); } catch {}
   document.getElementById("back").onclick = showHome;
   const drop = document.getElementById("drop"), fi = document.getElementById("fi");
@@ -678,7 +696,7 @@ async function addFiles(list) {
   if (!arr.length) { status(isImg ? "Esos archivos no son imágenes." : "Esos archivos no son PDF.", "err"); return; }
   if (!tool.multi) { files = []; arr = arr.slice(0, 1); }
   for (const f of arr) files.push({ id: uid(), name: f.name, size: f.size, type: f.type || "application/pdf", buf: await f.arrayBuffer(), n: null });
-  lastOuts = []; document.getElementById("res").innerHTML = ""; status("");
+  lastOuts = []; const rb = document.getElementById("res"); rb.innerHTML = ""; rb.hidden = true; status("");
   refresh();
   if (!isImg) for (const f of files) if (f.n === null) { f.n = await pageCount(f.buf).catch(() => "?"); refresh(); }
   if (tool.thumbs) buildThumbs();
@@ -767,30 +785,38 @@ function progress(f) { const b = document.getElementById("bar"); if (!b) return;
 
 async function run() {
   if (busy) return; busy = true; refresh();
-  const box = document.getElementById("res"); box.innerHTML = ""; progress(0);
+  const box = document.getElementById("res"); box.innerHTML = ""; box.hidden = true; progress(0);
   try {
     let outs = await tool.run((f, m) => { progress(f); status(m || "Procesando…"); });
-    const copyText = outs.copyText;
+    const copyText = outs.copyText, table = outs.table;
     const notes = outs.flatMap(o => o.zip ? o.zip.map(z => z.note) : [o.note]).filter(Boolean);
     if (outs.length === 1 && outs[0].zip) {
       status("Empaquetando en ZIP…");
       const zip = new JSZip(); outs[0].zip.forEach(z => zip.file(z.name, z.bytes));
-      outs = [{ name: outs[0].name, bytes: await zip.generateAsync({ type: "uint8array" }), count: outs[0].zip.length }];
+      outs = [{ name: outs[0].name, fx: "ZIP", label: `${outs[0].zip.length} archivos`, bytes: await zip.generateAsync({ type: "uint8array" }) }];
     }
-    const table = outs.table;
-    outs = outs.filter(o => !o.skip);
-    lastOuts = outs; progress(1); status("Listo.", "ok");
-    box.innerHTML = outs.map((o, i) => `<div class="result"><b>${esc(o.name)}</b> · ${fmt(o.bytes.byteLength)}${o.count ? ` · ${o.count} archivos dentro` : ""}</div>
-      <button class="sec" data-s="${i}">Guardar ${esc(o.label || "archivo")}</button>`).join("")
-      + (notes.length ? `<div class="note">${notes.map(esc).join("<br>")}</div>` : "")
-      + (table && table.length ? `<div class="opt" style="margin-top:16px"><span class="lb">Coordenadas encontradas (CRTM05)</span><div class="tbl"><table><thead><tr><th>#</th><th>Pág.</th><th>Origen</th><th>Este</th><th>Norte</th></tr></thead><tbody>${table.slice(0, 300).map(p => `<tr><td>${p.orden}</td><td>${p.pagina}</td><td>${esc(p.sistema)}</td><td>${p.este.toFixed(2)}</td><td>${p.norte.toFixed(2)}</td></tr>`).join("")}</tbody></table></div>${table.length > 300 ? `<span class="hint">Se muestran 300 de ${table.length}; el GeoJSON trae todas.</span>` : ""}</div>` : "")
-      + (copyText != null ? `<div class="opt" style="margin-top:16px"><label for="o-prev">Texto reconocido</label><textarea id="o-prev" rows="10" readonly>${esc(copyText)}</textarea><button class="sec" id="copy">Copiar texto</button></div>` : "");
+    const ready = outs.filter(o => !o.disabled);
+    if (ready.length > 1) {
+      const zip = new JSZip(); ready.forEach(o => zip.file(o.name, o.bytes));
+      outs.push({ name: base(files[0].name) + "_todo.zip", fx: "ZIP", label: "Todo junto", all: true, bytes: await zip.generateAsync({ type: "uint8array" }) });
+    }
+    lastOuts = outs; progress(1); status("Listo. Descargá abajo.", "ok");
+    const ext = o => o.fx || (o.name.split(".").pop() || "").toUpperCase();
+    box.innerHTML = `<h3>Tus archivos</h3><p class="sub">Tocá cada uno para descargarlo.</p>
+      <div class="dls">${outs.map((o, i) => o.disabled
+        ? `<button class="dlb" disabled><span class="fx">${ext(o)}</span><b>${esc(o.label)}</b><span class="sz">${esc(o.disabled)}</span></button>`
+        : `<button class="dlb${o.all ? " all" : ""}" data-s="${i}"><span class="fx">${ext(o)}</span><b>${esc(o.label || o.name)}</b><span class="sz">${fmt(o.bytes.byteLength)}</span><span class="act">Descargar</span></button>`).join("")}</div>
+      ${notes.length ? `<p class="note">${notes.map(esc).join("<br>")}</p>` : ""}
+      ${table && table.length ? `<details class="more" open><summary>Coordenadas encontradas: ${table.length} (en CRTM05)</summary><div class="tbl"><table><thead><tr><th>#</th><th>Pág.</th><th>Origen</th><th>Este</th><th>Norte</th></tr></thead><tbody>${table.slice(0, 300).map(p => `<tr><td>${p.orden}</td><td>${p.pagina}</td><td>${esc(p.sistema)}</td><td>${p.este.toFixed(2)}</td><td>${p.norte.toFixed(2)}</td></tr>`).join("")}</tbody></table></div><p class="note">Revisalas: algún número del texto puede parecer coordenada sin serlo.</p></details>` : ""}
+      ${copyText != null ? `<details class="more"><summary>Ver texto reconocido</summary><textarea id="o-prev" rows="12" readonly>${esc(copyText)}</textarea><button class="sec" id="copy">Copiar texto</button></details>` : ""}`;
+    box.hidden = false;
     box.querySelectorAll("[data-s]").forEach(b => b.onclick = () => save(+b.dataset.s));
     const cb = document.getElementById("copy");
     if (cb) cb.onclick = () => {
       const ta = document.getElementById("o-prev"), fb = () => { ta.select(); try { document.execCommand("copy"); status("Texto copiado.", "ok"); } catch { status("Seleccioná el texto y copialo con Ctrl+C."); } };
       try { navigator.clipboard.writeText(ta.value).then(() => status("Texto copiado.", "ok"), fb); } catch { fb(); }
     };
+    box.scrollIntoView({ behavior: "smooth", block: "start" });
     if (outs.length === 1) save(0);
   } catch (e) {
     console.error(e); progress(null); status(e.message || "Algo salió mal al procesar el archivo.", "err");
@@ -798,7 +824,7 @@ async function run() {
 }
 
 async function save(i) {
-  const o = lastOuts[i]; if (!o) return;
+  const o = lastOuts[i]; if (!o || o.disabled) return;
   const dl = await dlP;
   if (!dl) {
     // Fuera de Claude (archivo abierto en el navegador o página propia): descarga normal.
