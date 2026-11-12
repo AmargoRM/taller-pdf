@@ -456,7 +456,7 @@ const TOOLS = [
    opts: () => `
     <div class="opt"><span class="lb">Idioma del documento</span><div class="radios"><label><input type="radio" name="lang" value="spa" checked>Español</label><label><input type="radio" name="lang" value="spa+eng">Español + inglés</label><label><input type="radio" name="lang" value="eng">Inglés</label></div></div>
     <div class="opt"><span class="lb">Tipo de contenido</span><div class="radios"><label><input type="radio" name="kind" value="doc" checked>Documento</label><label><input type="radio" name="kind" value="screen">Captura de pantalla</label></div><span class="hint">Captura de pantalla: ordena el texto por zonas (arriba, centro, abajo) y entrega también la imagen reducida, para preguntas como "¿dónde hago clic?".</span></div>
-    <p class="note">Saca todo el texto, los números y las tablas en un archivo Markdown (.md) listo para pegar en el chat. Las imágenes se pueden recortar arrastrando sobre ellas; las de fondo oscuro se corrigen solas. Quita los encabezados y pies que se repiten en cada página y los deja una sola vez. No incluye firmas, sellos, fotos ni mapas: si eso importa, dale también la imagen a la IA.</p>`,
+    <p class="note">Saca todo el texto, los números y las tablas en un archivo Markdown (.md) listo para pegar en el chat. Las imágenes se pueden recortar arrastrando sobre ellas; las de fondo oscuro se corrigen solas. Las palabras que el OCR no leyó con seguridad salen entre ⟦ ⟧ para revisarlas contra el original. Quita los encabezados y pies que se repiten en cada página y los deja una sola vez. No incluye firmas, sellos, fotos ni mapas: si eso importa, dale también la imagen a la IA.</p>`,
    run: async (step) => {
      const langs = val("lang").split("+"), docs = [], extra = [];
      let before = 0, imgAfter = 0, worker = null, cur = "", span = [0, 1], lastEvt = Date.now();
@@ -485,7 +485,7 @@ const TOOLS = [
        const w = await getWorker(); lastEvt = Date.now();
        const { data } = await w.recognize(c, {}, { blocks: true }), words = [];
        for (const b of data.blocks || []) for (const p of b.paragraphs || []) for (const l of p.lines || []) for (const wd of l.words || []) {
-         const t = (wd.text || "").trim(); if (t && wd.confidence > 15) words.push({ t, x0: wd.bbox.x0, x1: wd.bbox.x1, y0: wd.bbox.y0, y1: wd.bbox.y1 });
+         const t = (wd.text || "").trim(); if (t && wd.confidence > 15 && !(wd.confidence < 30 && t.length <= 2)) words.push({ t, c: wd.confidence, x0: wd.bbox.x0, x1: wd.bbox.x1, y0: wd.bbox.y0, y1: wd.bbox.y1 });
        }
        return words;
      };
@@ -954,7 +954,8 @@ function imgTokens(w, h) {
   return Math.ceil((w * k) * (h * k) / 750);
 }
 function linesFromWords(words) {
-  words = words.map(w => ({ ...w, t: w.t.replace(/^[\/|\\]+|[\/|\\]+$/g, "") })).filter(w => w.t && !/^[\/|\\\[\]{}_~«»`´'",.;:!¡¿?=]{1,4}$/.test(w.t));
+  words = words.map(w => ({ ...w, t: w.t.replace(/^[\/|\\]+|[\/|\\]+$/g, "") })).filter(w => w.t && !/^[\/|\\\[\]{}_~«»`´'",.;:!¡¿?=]{1,4}$/.test(w.t))
+    .map(w => w.c != null && /[\p{L}\d]/u.test(w.t) && w.c < (/\d/.test(w.t) ? 92 : 88) ? { ...w, t: "⟦" + w.t + "⟧" } : w);
   if (!words.length) return [];
   const hs = words.map(w => w.y1 - w.y0).sort((a, b) => a - b), H = hs[Math.floor(hs.length / 2)] || 10;
   const sorted = words.slice().sort((a, b) => (a.y0 + a.y1) - (b.y0 + b.y1));
@@ -1053,6 +1054,8 @@ function docsToMarkdown(docs) {
     if (d.info && d.info.length) head.push(d.info.map(t => "- " + t).join("\n"));
     if (d.noText) head.push(`> ${d.noText}`);
     if (d.dark) head.push("> La imagen tenía fondo oscuro; se invirtieron los colores para leerla.");
+    const dudosas = P.reduce((n, L) => n + L.reduce((m, l) => m + (l.text.match(/⟦/g) || []).length, 0), 0) + ((d.screenMd || "").match(/⟦/g) || []).length;
+    if (dudosas) head.push(`> ${dudosas} palabra(s) entre ⟦ ⟧: el OCR no está seguro de haberlas leído bien. Antes de usar un número, nombre o fecha marcado, confirmalo en el documento original.`);
     if (d.screenMd) { if (d.screenNote) head.push(`> ${d.screenNote}`); parts.push(head.join("\n")); parts.push(d.screenMd); continue; }
     const kept = [...rep.values()].filter(Boolean);
     if (kept.length) head.push(`> Encabezado y pie que se repiten en las páginas (aparecen aquí una sola vez):\n${kept.map(t => "> " + t).join("\n")}`);
