@@ -98,6 +98,14 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .errbox{border:1px solid var(--accent);background:var(--accent-soft);border-radius:10px;padding:14px}
 .errbox b{font:600 15px var(--body);color:var(--accent)}
 .errbox p{margin:6px 0 0}
+/* recorte */
+.crops{display:flex;flex-direction:column;gap:14px;margin-top:14px}
+.crop .lb{font:600 13px var(--body);display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
+.crop .lb small{font-weight:400;color:var(--muted)}
+.cbox{position:relative;display:inline-block;max-width:100%;overflow:hidden;border-radius:6px;touch-action:none;cursor:crosshair;user-select:none;line-height:0}
+.cbox img{max-width:100%;max-height:420px;border:1px solid var(--line);border-radius:6px;-webkit-user-drag:none}
+.cbox .sel{position:absolute;border:2px solid var(--accent);background:rgba(184,50,29,.12);box-shadow:0 0 0 9999px rgba(0,0,0,.35);border-radius:2px;pointer-events:none}
+.crop .sec{width:auto;padding:6px 12px;margin:0;font-size:13px}
 /* ahorro de tokens */
 .stat{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px}
 .stat div{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px;min-width:0}
@@ -444,10 +452,11 @@ const TOOLS = [
      }
      return res;
    } },
- { g: "Convertir", id: "ia", glyph: "IA", name: "Preparar para IA", desc: "Convertí PDF o imágenes en texto ordenado para Claude u otras IA, gastando menos tokens.", accept: "any", multi: true,
+ { g: "Convertir", id: "ia", glyph: "IA", name: "Preparar para IA", desc: "Convertí PDF o imágenes en texto ordenado para Claude u otras IA, gastando menos tokens.", accept: "any", multi: true, crop: true,
    opts: () => `
     <div class="opt"><span class="lb">Idioma del documento</span><div class="radios"><label><input type="radio" name="lang" value="spa" checked>Español</label><label><input type="radio" name="lang" value="spa+eng">Español + inglés</label><label><input type="radio" name="lang" value="eng">Inglés</label></div></div>
-    <p class="note">Saca todo el texto, los números y las tablas en un archivo Markdown (.md) listo para pegar en el chat. Quita los encabezados y pies que se repiten en cada página y los deja una sola vez. No incluye firmas, sellos, fotos ni mapas: si eso importa, dale también la imagen a la IA.</p>`,
+    <div class="opt"><span class="lb">Tipo de contenido</span><div class="radios"><label><input type="radio" name="kind" value="doc" checked>Documento</label><label><input type="radio" name="kind" value="screen">Captura de pantalla</label></div><span class="hint">Captura de pantalla: ordena el texto por zonas (arriba, centro, abajo) y entrega también la imagen reducida, para preguntas como "¿dónde hago clic?".</span></div>
+    <p class="note">Saca todo el texto, los números y las tablas en un archivo Markdown (.md) listo para pegar en el chat. Las imágenes se pueden recortar arrastrando sobre ellas; las de fondo oscuro se corrigen solas. Quita los encabezados y pies que se repiten en cada página y los deja una sola vez. No incluye firmas, sellos, fotos ni mapas: si eso importa, dale también la imagen a la IA.</p>`,
    run: async (step) => {
      const langs = val("lang").split("+"), docs = [], extra = [];
      let before = 0, imgAfter = 0, worker = null, cur = "", span = [0, 1], lastEvt = Date.now();
@@ -503,24 +512,46 @@ const TOOLS = [
              }
              doc.info = info;
            }
-           const up = Math.max(bmp.width, bmp.height) < 1800 ? 2 : 1;
-           const c = document.createElement("canvas"); c.width = bmp.width * up; c.height = bmp.height * up;
-           const x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); x.drawImage(bmp, 0, 0, c.width, c.height);
+           const R = f.crop || { x: 0, y: 0, w: bmp.width, h: bmp.height };
+           if (f.crop) { doc.crop = true; doc.w = R.w; doc.h = R.h; }
+           const up = Math.max(R.w, R.h) < 1800 ? 2 : 1;
+           const c = document.createElement("canvas"); c.width = R.w * up; c.height = R.h * up;
+           const x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); x.drawImage(bmp, R.x, R.y, R.w, R.h, 0, 0, c.width, c.height);
            cur = `${f.name}: leyendo…`; span = [frac(0), frac(1)]; step(frac(0), cur);
-           const words = await ocrCanvas(c);
+           if (val("kind") === "screen" ? fixScreen(c) : fixDark(c)) doc.dark = true;
+           const cw = c.width, ch = c.height, PAD = val("kind") === "screen" ? 40 : 0;
+           let oc = c;
+           if (PAD) { oc = document.createElement("canvas"); oc.width = cw + PAD * 2; oc.height = ch + PAD * 2; const ox = oc.getContext("2d"); ox.fillStyle = "#fff"; ox.fillRect(0, 0, oc.width, oc.height); ox.drawImage(c, PAD, PAD); }
+           const words = (await ocrCanvas(oc)).map(w => ({ ...w, x0: w.x0 - PAD, x1: w.x1 - PAD, y0: w.y0 - PAD, y1: w.y1 - PAD }));
+           if (oc !== c) oc.width = oc.height = 0;
            c.width = c.height = 0;
-           const chars = words.reduce((n, w) => n + (w.t.match(/[\p{L}\d]/gu) || []).length, 0);
-           if (chars < 30) {
-             // Sin texto (paisaje, retrato…): la IA necesita verla; se entrega una versión reducida que gasta menos.
-             const k = Math.min(1, 1000 / Math.max(bmp.width, bmp.height)), rw = Math.round(bmp.width * k), rh = Math.round(bmp.height * k);
+           const screen = val("kind") === "screen";
+           // imagen reducida (o el recorte) para adjuntar a la IA
+           const makeSmall = async maxSide => {
+             const k = Math.min(1, maxSide / Math.max(R.w, R.h)), rw = Math.round(R.w * k), rh = Math.round(R.h * k);
              const rc = document.createElement("canvas"); rc.width = rw; rc.height = rh;
-             const rx = rc.getContext("2d"); rx.fillStyle = "#fff"; rx.fillRect(0, 0, rw, rh); rx.drawImage(bmp, 0, 0, rw, rh);
-             const jpg = new Uint8Array(await canvasBytes(rc, "image/jpeg", .82)); rc.width = rc.height = 0;
-             const tokSmall = imgTokens(rw, rh); imgAfter += tokSmall;
-             extra.push({ name: base(f.name) + "_para_IA.jpg", label: "Imagen reducida", fx: "JPG", bytes: jpg });
+             const rx = rc.getContext("2d"); rx.fillStyle = "#fff"; rx.fillRect(0, 0, rw, rh); rx.drawImage(bmp, R.x, R.y, R.w, R.h, 0, 0, rw, rh);
+             const jpg = new Uint8Array(await canvasBytes(rc, "image/jpeg", .85)); rc.width = rc.height = 0;
+             return { jpg, tok: imgTokens(rw, rh) };
+           };
+           const chars = words.reduce((n, w) => n + (w.t.match(/[\p{L}\d]/gu) || []).length, 0);
+           if (screen && chars >= 30) {
+             // Captura de pantalla: texto por zonas + imagen para preguntas de "dónde hago clic"
+             const sm = await makeSmall(1200);
+             extra.push({ name: base(f.name) + (f.crop ? "_recorte" : "") + "_para_IA.jpg", label: `${f.crop ? "Recorte" : "Imagen reducida"} · ≈ ${sm.tok.toLocaleString("es-CR")} tokens`, fx: "JPG", bytes: sm.jpg });
+             doc.screenMd = screenToMd(words, cw, ch);
+             doc.screenNote = `Si la pregunta es dónde hacer clic o qué ícono usar, adjuntá también "${base(f.name)}${f.crop ? "_recorte" : ""}_para_IA.jpg" (≈ ${sm.tok.toLocaleString("es-CR")} tokens): el texto no muestra íconos ni colores.`;
+             pages.push(withH([], 1));
+           } else if (chars < 30) {
+             // Sin texto (paisaje, retrato…): la IA necesita verla; se entrega una versión reducida que gasta menos.
+             const sm = await makeSmall(1000), tokSmall = sm.tok, jpg = sm.jpg; imgAfter += tokSmall;
+             extra.push({ name: base(f.name) + (f.crop ? "_recorte" : "") + "_para_IA.jpg", label: f.crop ? "Recorte" : "Imagen reducida", fx: "JPG", bytes: jpg });
              doc.noText = `La imagen casi no tiene texto (paisaje, retrato, foto de campo…). El texto no puede describirla: para que la IA la vea, adjuntá "${base(f.name)}_para_IA.jpg", que gasta ≈ ${tokSmall.toLocaleString("es-CR")} tokens en vez de ≈ ${tokOrig.toLocaleString("es-CR")}.`;
              pages.push(withH([], 1));
-           } else pages.push(withH(linesFromWords(words), bmp.height * up));
+           } else {
+             pages.push(withH(linesFromWords(words), ch));
+             if (f.crop) { const sm = await makeSmall(1568); extra.push({ name: base(f.name) + "_recorte.jpg", label: `Recorte · ≈ ${sm.tok.toLocaleString("es-CR")} tokens`, fx: "JPG", bytes: sm.jpg }); }
+           }
            bmp.close && bmp.close();
          } else {
            const pdf = await loadJs(f.buf);
@@ -771,6 +802,107 @@ function buildGeoJSON(pts, doc) {
 }
 
 /* ---------- Preparar para IA ---------- */
+function buildCrops() {
+  const box = document.getElementById("crops"); if (!box) return;
+  box.querySelectorAll("img").forEach(im => URL.revokeObjectURL(im.src));
+  box.innerHTML = "";
+  files.filter(f => /^image\//.test(f.type)).forEach(f => {
+    const wrap = document.createElement("div"); wrap.className = "crop";
+    wrap.innerHTML = `<div class="lb"><span>${esc(f.name)} <small>· arrastrá sobre la imagen para recortar (opcional)</small></span><button type="button" class="sec" hidden>Quitar recorte</button></div><div class="cbox"><img alt="${esc(f.name)}"><div class="sel" hidden></div></div>`;
+    const img = wrap.querySelector("img"), sel = wrap.querySelector(".sel"), cb = wrap.querySelector(".cbox"), clr = wrap.querySelector("button");
+    img.src = URL.createObjectURL(new Blob([f.buf], { type: f.type }));
+    const draw = () => {
+      if (!f.crop || !img.naturalWidth) { sel.hidden = true; clr.hidden = true; return; }
+      const k = img.clientWidth / img.naturalWidth;
+      Object.assign(sel.style, { left: f.crop.x * k + "px", top: f.crop.y * k + "px", width: f.crop.w * k + "px", height: f.crop.h * k + "px" });
+      sel.hidden = false; clr.hidden = false;
+    };
+    img.onload = draw;
+    let a = null;
+    const pt = e => { const r = img.getBoundingClientRect(), k = img.naturalWidth / r.width; return [Math.max(0, Math.min(img.naturalWidth, (e.clientX - r.left) * k)), Math.max(0, Math.min(img.naturalHeight, (e.clientY - r.top) * k))]; };
+    cb.onpointerdown = e => { e.preventDefault(); cb.setPointerCapture(e.pointerId); a = pt(e); };
+    cb.onpointermove = e => { if (!a) return; const b = pt(e); f.crop = { x: Math.min(a[0], b[0]), y: Math.min(a[1], b[1]), w: Math.abs(b[0] - a[0]), h: Math.abs(b[1] - a[1]) }; draw(); };
+    cb.onpointerup = cb.onpointercancel = () => { a = null; if (f.crop && (f.crop.w < 20 || f.crop.h < 20)) f.crop = null; if (f.crop) f.crop = { x: Math.round(f.crop.x), y: Math.round(f.crop.y), w: Math.round(f.crop.w), h: Math.round(f.crop.h) }; draw(); };
+    clr.onclick = () => { f.crop = null; draw(); };
+    box.appendChild(wrap);
+  });
+  box.hidden = !box.children.length;
+}
+// Capturas de pantalla: cada pedazo con fondo oscuro (barras, ventanas, modo oscuro) se pasa a gris y se invierte por separado,
+// para que todo el texto quede oscuro sobre fondo claro, que es lo que el OCR lee bien.
+function fixScreen(c) {
+  const x = c.getContext("2d"), d = x.getImageData(0, 0, c.width, c.height), p = d.data, W = c.width, H = c.height, T = 40;
+  const g = new Uint8ClampedArray(W * H);
+  for (let i = 0, j = 0; j < g.length; i += 4, j++) g[j] = 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2];
+  let inverted = 0, tiles = 0;
+  for (let ty = 0; ty < H; ty += T) for (let tx = 0; tx < W; tx += T) {
+    const y1 = Math.min(H, ty + T), x1 = Math.min(W, tx + T);
+    // fondo del pedazo = valor más común (el texto ocupa poco)
+    const hist = new Uint32Array(16);
+    for (let y = ty; y < y1; y += 2) for (let xx = tx; xx < x1; xx += 2) hist[g[y * W + xx] >> 4]++;
+    let m = 0; for (let k = 1; k < 16; k++) if (hist[k] > hist[m]) m = k;
+    tiles++;
+    if (m < 8) { inverted++; for (let y = ty; y < y1; y++) for (let xx = tx; xx < x1; xx++) g[y * W + xx] = 255 - g[y * W + xx]; }
+  }
+  // Umbral local: un píxel es letra si es bastante más oscuro que su alrededor. Deja solo letras negras sobre blanco.
+  const R = 16, W1 = W + 1, I = new Float64Array(W1 * (H + 1));
+  for (let y = 0; y < H; y++) { let row = 0; for (let xx = 0; xx < W; xx++) { row += g[y * W + xx]; I[(y + 1) * W1 + xx + 1] = I[y * W1 + xx + 1] + row; } }
+  for (let y = 0; y < H; y++) {
+    const a = Math.max(0, y - R), b = Math.min(H, y + R + 1);
+    for (let xx = 0; xx < W; xx++) {
+      const l = Math.max(0, xx - R), r = Math.min(W, xx + R + 1);
+      const m = (I[b * W1 + r] - I[a * W1 + r] - I[b * W1 + l] + I[a * W1 + l]) / ((b - a) * (r - l));
+      const v = g[y * W + xx] < m - Math.max(18, m * 0.12) ? 0 : 255, i = (y * W + xx) * 4;
+      p[i] = p[i + 1] = p[i + 2] = v;
+    }
+  }
+  // Borrar líneas rectas largas (bordes de botones, ventanas y tablas): el OCR ignora el texto encerrado en recuadros.
+  const L = 60, ink = k => p[k * 4] === 0, wipe = k => { p[k * 4] = p[k * 4 + 1] = p[k * 4 + 2] = 255; };
+  const runs = [];
+  for (let y = 0; y < H; y++) { let st = -1; for (let xx = 0; xx <= W; xx++) { const on = xx < W && ink(y * W + xx); if (on && st < 0) st = xx; else if (!on && st >= 0) { if (xx - st > L) runs.push([y * W + st, 1, xx - st]); st = -1; } } }
+  for (let xx = 0; xx < W; xx++) { let st = -1; for (let y = 0; y <= H; y++) { const on = y < H && ink(y * W + xx); if (on && st < 0) st = y; else if (!on && st >= 0) { if (y - st > L) runs.push([st * W + xx, W, y - st]); st = -1; } } }
+  for (const [k0, stp, n] of runs) for (let i = 0; i < n; i++) wipe(k0 + i * stp);
+  x.putImageData(d, 0, 0);
+  return inverted > tiles * 0.3;
+}
+// Texto claro sobre fondo oscuro (modo oscuro): el OCR lo lee mal, así que se invierten los colores.
+function fixDark(c) {
+  const x = c.getContext("2d"), d = x.getImageData(0, 0, c.width, c.height), p = d.data;
+  let sum = 0, n = 0;
+  for (let i = 0; i < p.length; i += 4 * 37) { sum += 0.299 * p[i] + 0.587 * p[i + 1] + 0.114 * p[i + 2]; n++; }
+  if (!n || sum / n >= 115) return false;
+  for (let i = 0; i < p.length; i += 4) { p[i] = 255 - p[i]; p[i + 1] = 255 - p[i + 1]; p[i + 2] = 255 - p[i + 2]; }
+  x.putImageData(d, 0, 0);
+  return true;
+}
+function screenToMd(words, W, H) {
+  const lines = linesFromWords(words);
+  const items = [];
+  lines.forEach(l => l.cells.forEach(c => { if ((c.t.match(/[\p{L}\d]/gu) || []).length) items.push({ t: c.t, x0: c.x0, x1: c.x1, y: l.y, h: l.H }); }));
+  const blocks = [];
+  for (const it of items.sort((a, b) => a.y - b.y || a.x0 - b.x0)) {
+    const b = blocks.find(b => (Math.abs(it.y - b.y1) < it.h * 0.6 && it.x0 - b.x1 < it.h * 6 && it.x0 >= b.x0) || (it.y - b.y1 < it.h * 2.6 && it.y > b.y1 && (Math.abs(it.x0 - b.x0) < it.h * 3 || (it.x0 < b.x1 && it.x1 > b.x0))));
+    if (b) { b.items.push(it); b.x0 = Math.min(b.x0, it.x0); b.x1 = Math.max(b.x1, it.x1); b.y1 = Math.max(b.y1, it.y); }
+    else blocks.push({ items: [it], x0: it.x0, x1: it.x1, y0: it.y, y1: it.y });
+  }
+  const ZV = ["Arriba", "Centro", "Abajo"], ZH = ["a la izquierda", "", "a la derecha"];
+  const zone = b => { const cx = (b.x0 + b.x1) / 2 / W, cy = (b.y0 + b.y1) / 2 / H; return [Math.min(2, Math.floor(cy * 3)), Math.min(2, Math.floor(cx * 3))]; };
+  const groups = new Map();
+  blocks.forEach(b => { const [v, h] = zone(b), k = v * 3 + h; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(b); });
+  const out = [];
+  [...groups.keys()].sort((a, b) => a - b).forEach(k => {
+    const v = Math.floor(k / 3), h = k % 3;
+    out.push(`## ${(ZV[v] + " " + (h === 1 ? (v === 1 ? "de la pantalla" : "al centro") : ZH[h])).trim()}`);
+    groups.get(k).sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0).forEach(b => {
+      const rows = []; let cur = null;
+      b.items.sort((a, c) => a.y - c.y || a.x0 - c.x0).forEach(it => { if (cur && Math.abs(it.y - cur.y) < it.h * 0.6) cur.t.push(it.t); else { cur = { y: it.y, t: [it.t] }; rows.push(cur); } });
+      const pos = `(x ${Math.round((b.x0 + b.x1) / 2 / W * 100)} %, y ${Math.round((b.y0 + b.y1) / 2 / H * 100)} %)`;
+      out.push(`- ${pos} ${rows.map(r => r.t.join(" | ")).join(" / ")}`);
+    });
+    out.push("");
+  });
+  return out.join("\n").trim();
+}
 function readExif(buf) {
   try {
     const v = new DataView(buf);
@@ -917,9 +1049,11 @@ function docsToMarkdown(docs) {
       for (const [k, c] of cnt) if (c >= Math.max(2, Math.ceil(n * 0.5))) rep.set(k, null);
       P.forEach(L => L.forEach((l, idx) => { const k = keyOf(l.text); if (edge(L, idx) && rep.has(k) && rep.get(k) === null) rep.set(k, l.text); }));
     }
-    const head = [`# ${d.name}`, d.kind === "img" ? `> Imagen de ${d.w} × ${d.h} px.${d.noText ? "" : " Texto extraído: no incluye firmas, sellos ni fotos."}` : `> ${n} página(s). Texto extraído: no incluye firmas, sellos, fotos ni mapas.`];
+    const head = [`# ${d.name}`, d.screenMd ? `> Captura de pantalla${d.crop ? " (recorte)" : ""} de ${d.w} × ${d.h} px. Texto ordenado por zonas; (x, y) es la posición en porcentaje desde la esquina superior izquierda. No incluye íconos sin texto ni colores.` : d.kind === "img" ? `> Imagen${d.crop ? " (recorte)" : ""} de ${d.w} × ${d.h} px.${d.noText ? "" : " Texto extraído: no incluye firmas, sellos ni fotos."}` : `> ${n} página(s). Texto extraído: no incluye firmas, sellos, fotos ni mapas.`];
     if (d.info && d.info.length) head.push(d.info.map(t => "- " + t).join("\n"));
     if (d.noText) head.push(`> ${d.noText}`);
+    if (d.dark) head.push("> La imagen tenía fondo oscuro; se invirtieron los colores para leerla.");
+    if (d.screenMd) { if (d.screenNote) head.push(`> ${d.screenNote}`); parts.push(head.join("\n")); parts.push(d.screenMd); continue; }
     const kept = [...rep.values()].filter(Boolean);
     if (kept.length) head.push(`> Encabezado y pie que se repiten en las páginas (aparecen aquí una sola vez):\n${kept.map(t => "> " + t).join("\n")}`);
     parts.push(head.join("\n"));
@@ -959,6 +1093,7 @@ function openTool(id) {
         </div>
         <ul class="files" id="list"></ul>
         <div class="thumbs" id="thumbs" ${tool.thumbs ? "" : "hidden"}></div>
+        <div class="crops" id="crops" ${tool.crop ? "" : "hidden"}></div>
       </section>
       <aside class="panel">
         <form id="opts" autocomplete="off">${tool.opts()}</form>
@@ -995,6 +1130,12 @@ async function addFiles(list) {
   refresh();
   if (!isImg) for (const f of files) if (f.n === null) { f.n = /^image\//.test(f.type) ? undefined : await pageCount(f.buf).catch(() => "?"); refresh(); }
   if (tool.thumbs) buildThumbs();
+  if (tool.crop) {
+    buildCrops();
+    // Si todo son imágenes PNG, lo más probable es que sean capturas de pantalla
+    const k = document.querySelector('input[name="kind"][value="screen"]');
+    if (k && files.length && files.every(f => /png$/i.test(f.type))) k.checked = true;
+  }
 }
 
 function refresh() {
@@ -1009,6 +1150,7 @@ function refresh() {
     if (a === "up" && i > 0) [files[i - 1], files[i]] = [files[i], files[i - 1]];
     if (a === "dn" && i < files.length - 1) [files[i + 1], files[i]] = [files[i], files[i + 1]];
     refresh();
+    if (tool.crop) buildCrops();
   });
   const ok = tool.ready ? tool.ready() : files.length >= 1;
   const go = document.getElementById("go"); go.disabled = !ok || busy;
