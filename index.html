@@ -188,7 +188,7 @@ async function renderPage(pdf, n, scale) {
   c.width = Math.max(1, Math.round(vp.width)); c.height = Math.max(1, Math.round(vp.height));
   const ctx = c.getContext("2d");
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
-  await p.render({ canvasContext: ctx, viewport: vp }).promise;
+  await p.render({ canvasContext: ctx, viewport: vp, intent: "print" }).promise;
   const pts = p.getViewport({ scale: 1 });
   p.cleanup();
   return { canvas: c, w: pts.width, h: pts.height };
@@ -362,7 +362,7 @@ const TOOLS = [
  { g: "Convertir", id: "ocr", glyph: "OCR", name: "Leer escaneados (OCR)", desc: "Sacá el texto de PDF escaneados a Word, TXT o PDF buscable, y las coordenadas a GeoJSON.", accept: "pdf", multi: false,
    opts: () => `
     <div class="opt"><span class="lb">Idioma del documento</span><div class="radios"><label><input type="radio" name="lang" value="spa" checked>Español</label><label><input type="radio" name="lang" value="spa+eng">Español + inglés</label><label><input type="radio" name="lang" value="eng">Inglés</label></div></div>
-    <p class="note">Sirve para PDF escaneados y digitales. Las páginas digitales se leen directo; las escaneadas, con OCR. La primera vez tarda más porque descarga el diccionario.</p>`,
+    <p class="note">Sirve para PDF escaneados y digitales. Las páginas digitales se leen directo; las escaneadas, con OCR. La primera vez tarda más porque descarga el diccionario. Podés minimizar la ventana o cambiar de pestaña: sigue leyendo y el avance se ve en el nombre de la pestaña.</p>`,
    run: async (step) => {
      const f = files[0], langs = val("lang").split("+"), all = false, sc = 300 / 72;
      const pdf = await loadJs(f.buf), N = pdf.numPages, out = [];
@@ -385,7 +385,7 @@ const TOOLS = [
          const vp = page.getViewport({ scale: sc });
          const c = document.createElement("canvas"); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
          const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
-         await page.render({ canvasContext: ctx, viewport: vp }).promise;
+         await page.render({ canvasContext: ctx, viewport: vp, intent: "print" }).promise;
          cur = n;
          const { data } = await worker.recognize(c, {}, { text: true, blocks: true });
          c.width = c.height = 0; page.cleanup();
@@ -784,6 +784,9 @@ async function padPng() {
 }
 
 /* ---------- ejecutar y guardar ---------- */
+const BASE_TITLE = document.title;
+function setTitle(prefix) { document.title = prefix + BASE_TITLE; }
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !busy) setTitle(""); });
 function status(msg, cls) { const s = document.getElementById("st"); if (!s) return; s.textContent = msg; s.className = "status" + (cls ? " " + cls : ""); }
 function progress(f) { const b = document.getElementById("bar"); if (!b) return; b.hidden = f === null; if (f !== null) b.firstElementChild.style.width = Math.round(f * 100) + "%"; }
 
@@ -791,7 +794,11 @@ async function run() {
   if (busy) return; busy = true; refresh();
   const box = document.getElementById("res"); box.innerHTML = ""; box.hidden = true; progress(0);
   try {
-    let outs = await tool.run((f, m) => { progress(f); status(m || "Procesando…"); });
+    const step = (f, m) => { progress(f); status(m || "Procesando…"); setTitle(Math.round(f * 100) + " % · "); };
+    const work = () => tool.run(step);
+    // Mientras haya un trabajo activo, Chrome no congela ni descarta la pestaña aunque esté minimizada.
+    let outs = (navigator.locks && navigator.locks.request) ? await navigator.locks.request("taller-pdf-trabajo", work) : await work();
+    setTitle(document.hidden ? "✓ Listo · " : "");
     const copyText = outs.copyText, table = outs.table;
     const notes = outs.flatMap(o => o.zip ? o.zip.map(z => z.note) : [o.note]).filter(Boolean);
     if (outs.length === 1 && outs[0].zip) {
@@ -823,7 +830,7 @@ async function run() {
     box.scrollIntoView({ behavior: "smooth", block: "start" });
     if (outs.length === 1) save(0);
   } catch (e) {
-    console.error(e); progress(null); status(e.message || "Algo salió mal al procesar el archivo.", "err");
+    console.error(e); progress(null); setTitle(document.hidden ? "⚠ Error · " : ""); status(e.message || "Algo salió mal al procesar el archivo.", "err");
   } finally { busy = false; refresh(); }
 }
 
