@@ -95,6 +95,15 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .dlb.all{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 .dlb.all .fx{background:rgba(255,255,255,.2);color:inherit}
 .dlb.all .act,.dlb.all span.sz{color:inherit}
+/* ahorro de tokens */
+.stat{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:16px}
+.stat div{background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px;min-width:0}
+.stat span{display:block;font:500 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.stat b{display:block;font:700 22px/1.2 var(--display);font-variant-numeric:tabular-nums;margin-top:4px}
+.stat .win{border-color:var(--ok)}
+.stat .win b{color:var(--ok)}
+.stat p{grid-column:1/-1;margin:0;font-size:12px;color:var(--muted)}
+@media (max-width:480px){.stat b{font-size:18px}}
 details.more{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
 details.more summary{cursor:pointer;font:600 14px var(--body)}
 details.more[open] summary{margin-bottom:10px}
@@ -432,6 +441,77 @@ const TOOLS = [
      }
      return res;
    } },
+ { g: "Convertir", id: "ia", glyph: "IA", name: "Preparar para IA", desc: "Convertí PDF o imágenes en texto ordenado para Claude u otras IA, gastando menos tokens.", accept: "any", multi: true,
+   opts: () => `
+    <div class="opt"><span class="lb">Idioma del documento</span><div class="radios"><label><input type="radio" name="lang" value="spa" checked>Español</label><label><input type="radio" name="lang" value="spa+eng">Español + inglés</label><label><input type="radio" name="lang" value="eng">Inglés</label></div></div>
+    <p class="note">Saca todo el texto, los números y las tablas en un archivo Markdown (.md) listo para pegar en el chat. Quita los encabezados y pies que se repiten en cada página y los deja una sola vez. No incluye firmas, sellos, fotos ni mapas: si eso importa, dale también la imagen a la IA.</p>`,
+   run: async (step) => {
+     const langs = val("lang").split("+"), docs = [];
+     let before = 0, worker = null, cur = "";
+     const getWorker = async () => {
+       if (worker) return worker;
+       step(null, "Descargando el motor de OCR y el idioma…");
+       await loadScript(TESS, "Tesseract");
+       try { worker = await Tesseract.createWorker(langs, 1, { logger: m => { if (m.status === "recognizing text") step(null, `${cur} ${Math.round(m.progress * 100)} %`); } }); }
+       catch (e) { throw new Error("No se pudo descargar el idioma para el OCR. Revisá tu conexión."); }
+       return worker;
+     };
+     const ocrCanvas = async c => {
+       const w = await getWorker(), { data } = await w.recognize(c, {}, { blocks: true }), words = [];
+       for (const b of data.blocks || []) for (const p of b.paragraphs || []) for (const l of p.lines || []) for (const wd of l.words || []) {
+         const t = (wd.text || "").trim(); if (t && wd.confidence > 15) words.push({ t, x0: wd.bbox.x0, x1: wd.bbox.x1, y0: wd.bbox.y0, y1: wd.bbox.y1 });
+       }
+       return words;
+     };
+     try {
+       for (let fi = 0; fi < files.length; fi++) {
+         const f = files[fi], pages = [], frac = k => (fi + k) / files.length;
+         if (/^image\//.test(f.type)) {
+           const bmp = await createImageBitmap(new Blob([f.buf]));
+           before += imgTokens(bmp.width, bmp.height);
+           const up = Math.max(bmp.width, bmp.height) < 1800 ? 2 : 1;
+           const c = document.createElement("canvas"); c.width = bmp.width * up; c.height = bmp.height * up;
+           const x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); x.drawImage(bmp, 0, 0, c.width, c.height);
+           cur = `${f.name}: leyendo…`; step(frac(0), cur);
+           pages.push(withH(linesFromWords(await ocrCanvas(c)), c.height));
+           c.width = c.height = 0;
+         } else {
+           const pdf = await loadJs(f.buf);
+           for (let n = 1; n <= pdf.numPages; n++) {
+             const page = await pdf.getPage(n), vp = page.getViewport({ scale: 1 });
+             before += imgTokens(vp.width * 2, vp.height * 2);
+             const tc = await page.getTextContent(), words = [];
+             let chars = 0;
+             for (const it of tc.items) {
+               const t = (it.str || "").replace(/\s+/g, " ").trim(); if (!t) continue;
+               const h = Math.hypot(it.transform[2], it.transform[3]) || it.height || 10;
+               const [x0, yb] = vp.convertToViewportPoint(it.transform[4], it.transform[5]);
+               words.push({ t, x0, x1: x0 + (it.width || t.length * h * 0.5), y0: yb - h, y1: yb });
+               chars += t.length;
+             }
+             before += Math.ceil(chars / 3.5);
+             if (chars > 25) { step(frac((n - 1) / pdf.numPages / 1), `${f.name}: página ${n} de ${pdf.numPages} (texto digital)`); pages.push(withH(linesFromWords(words), vp.height)); }
+             else {
+               cur = `${f.name}: leyendo página ${n} de ${pdf.numPages}…`; step(frac((n - 1) / pdf.numPages), cur);
+               const r = await renderPage(pdf, n, 300 / 72);
+               pages.push(withH(linesFromWords(await ocrCanvas(r.canvas)), r.canvas.height));
+               r.canvas.width = r.canvas.height = 0;
+             }
+             page.cleanup();
+           }
+           pdf.destroy();
+         }
+         docs.push({ name: f.name, pages });
+       }
+     } finally { if (worker) await worker.terminate(); }
+     step(.98, "Ordenando el texto…");
+     const md = docsToMarkdown(docs);
+     if (!md.replace(/[#>\s-]/g, "")) throw new Error("No se encontró texto. Revisá que el documento se lea bien.");
+     const res = [{ name: (files.length === 1 ? base(files[0].name) : "documentos") + "_para_IA.md", label: "Markdown para IA", fx: "MD", bytes: new TextEncoder().encode(md) }];
+     res.copyText = md; res.copyOpen = true;
+     res.stats = { before, after: Math.ceil(md.length / 3.5) };
+     return res;
+   } },
  { g: "Editar", id: "marca", glyph: "Aa", name: "Marca de agua", desc: "Estampá un texto como BORRADOR o CONFIDENCIAL en cada página.", accept: "pdf", multi: true,
    opts: () => `
     <div class="opt"><label for="o-txt">Texto</label><input id="o-txt" type="text" value="BORRADOR"></div>
@@ -642,6 +722,120 @@ function buildGeoJSON(pts, doc) {
       geometry: { type: "Point", coordinates: [p.este, p.norte] } })) };
 }
 
+/* ---------- Preparar para IA ---------- */
+function imgTokens(w, h) {
+  // Claude reduce la imagen a un máximo de 1568 px por lado y ~1,15 megapíxeles; tokens ≈ ancho × alto / 750
+  const k = Math.min(1, 1568 / Math.max(w, h), Math.sqrt(1150000 / (w * h)));
+  return Math.ceil((w * k) * (h * k) / 750);
+}
+function linesFromWords(words) {
+  words = words.map(w => ({ ...w, t: w.t.replace(/^[\/|\\]+|[\/|\\]+$/g, "") })).filter(w => w.t && !/^[\/|\\\[\]{}_~«»`´'",.;:!¡¿?=]{1,4}$/.test(w.t));
+  if (!words.length) return [];
+  const hs = words.map(w => w.y1 - w.y0).sort((a, b) => a - b), H = hs[Math.floor(hs.length / 2)] || 10;
+  const sorted = words.slice().sort((a, b) => (a.y0 + a.y1) - (b.y0 + b.y1));
+  const lines = [];
+  for (const w of sorted) {
+    const cy = (w.y0 + w.y1) / 2, L = lines[lines.length - 1];
+    if (L && Math.abs(cy - L.cy) < H * 0.55) { L.w.push(w); L.cy = (L.cy * (L.w.length - 1) + cy) / L.w.length; }
+    else lines.push({ cy, w: [w] });
+  }
+  return lines.map(L => {
+    L.w.sort((a, b) => a.x0 - b.x0);
+    const cw = L.w.reduce((s, w) => s + (w.x1 - w.x0), 0) / Math.max(1, L.w.reduce((s, w) => s + w.t.length, 0)) || H * 0.5;
+    const cells = []; let c = null;
+    for (const w of L.w) {
+      if (c && w.x0 - c.x1 < Math.max(cw * 2.6, H * 1.1)) { c.t += (w.x0 - c.x1 > cw * 0.25 ? " " : "") + w.t; c.x1 = Math.max(c.x1, w.x1); }
+      else { c = { t: w.t, x0: w.x0, x1: w.x1 }; cells.push(c); }
+    }
+    return { y: L.cy, H, cells, x0: cells[0].x0, x1: cells[cells.length - 1].x1, text: cells.map(c => c.t).join(" ") };
+  });
+}
+const withH = (L, h) => { L.pageH = h; return L; };
+// encabezado/pie: solo las 3 primeras o últimas líneas y dentro del 15 % superior o inferior de la hoja
+const edge = (L, idx) => { const l = L[idx], h = L.pageH || 1; return (idx < 3 && l.y < h * 0.15) || (idx >= L.length - 3 && l.y > h * 0.85); };
+const junk = t => /^[\s\-_=—–.·•|~*]+$/.test(t);
+const keyOf = t => (t.toLowerCase().match(/[a-záéíóúñü]{4,}/g) || []).join(" ");
+function tableMd(rows) {
+  const anchors = rows.reduce((a, r) => r.cells.length > a.length ? r.cells : a, []).map(c => c.x0);
+  const col = c => { let b = 0, d = Infinity; anchors.forEach((x, i) => { const dd = Math.abs(c.x0 - x); if (dd < d) { d = dd; b = i; } }); return b; };
+  const grid = rows.map(r => { const g = anchors.map(() => ""); r.cells.forEach(c => { const i = col(c); g[i] = (g[i] ? g[i] + " " : "") + c.t; }); return g; });
+  const full = g => g.filter(Boolean).length >= Math.ceil(anchors.length * 0.6);
+  const out = []; let pend = null;
+  for (const g of grid) {
+    if (full(g)) { out.push(pend ? g.map((v, i) => [pend[i], v].filter(Boolean).join(" ")) : g); pend = null; }
+    else if (out.length) { const last = out[out.length - 1]; g.forEach((v, i) => { if (v) last[i] = [last[i], v].filter(Boolean).join(" "); }); }
+    else pend = pend ? pend.map((v, i) => [v, g[i]].filter(Boolean).join(" ")) : g;
+  }
+  if (pend) out.push(pend);
+  const cell = v => v.replace(/\|/g, "/").trim();
+  const lines = out.map(g => "| " + g.map(cell).join(" | ") + " |");
+  lines.splice(1, 0, "|" + anchors.map(() => " --- ").join("|") + "|");
+  return lines.join("\n");
+}
+function pageToMd(lines, pageH) {
+  lines = lines.filter(l => !junk(l.text) && (l.text.match(/[\p{L}\d]/gu) || []).length >= 3);
+  if (!lines.length) return "";
+  const left = Math.min(...lines.map(l => l.x0)), right = Math.max(...lines.map(l => l.x1)), W = right - left || 1;
+  const gaps = []; for (let i = 1; i < lines.length; i++) gaps.push(lines[i].y - lines[i - 1].y);
+  const LS = gaps.slice().sort((a, b) => a - b)[Math.floor(gaps.length / 2)] || lines[0].H * 1.4;
+  // marcar filas de tabla
+  const inBand = l => pageH && (l.y < pageH * 0.1 || l.y > pageH * 0.88);
+  const isRow = lines.map(l => !inBand(l) && (l.cells.length >= 3 || (l.cells.length >= 2 && l.x1 - l.x0 < W * 0.95 && l.cells.some((c, i) => i && c.x0 - l.cells[i - 1].x1 > W * 0.08))));
+  const tbl = lines.map(() => false);
+  for (let i = 0; i < lines.length; i++) {
+    if (!isRow[i]) continue;
+    let j = i; while (j + 1 < lines.length && isRow[j + 1] && lines[j + 1].y - lines[j].y < LS * 2.2) j++;
+    const core = lines.slice(i, j + 1);
+    if (core.length >= 2 && core.some(l => l.cells.length >= 3) || core.some(l => l.cells.length >= 4)) {
+      let a = i, b = j;
+      const near = (k, ref) => Math.abs(lines[k].y - lines[ref].y) < LS * 1.6 && lines[k].x1 - lines[k].x0 < W * 0.75 && !/[.:]$/.test(lines[k].text);
+      while (a - 1 >= 0 && !tbl[a - 1] && near(a - 1, a)) a--;
+      while (b + 1 < lines.length && !inBand(lines[b + 1]) && near(b + 1, b)) b++;
+      for (let k = a; k <= b; k++) tbl[k] = true;
+      i = b;
+    }
+  }
+  const out = []; let para = [], i = 0;
+  const flush = () => { if (para.length) { out.push(joinLines(para)); para = []; } };
+  while (i < lines.length) {
+    const l = lines[i];
+    if (tbl[i]) { flush(); let j = i; while (j + 1 < lines.length && tbl[j + 1]) j++; out.push(tableMd(lines.slice(i, j + 1))); i = j + 1; continue; }
+    const t = l.cells.map(c => c.t).join("  ").replace(/\s{3,}/g, "  ").trim();
+    const prev = lines[i - 1], bigGap = prev && l.y - prev.y > LS * 1.6;
+    const heading = t.length <= 70 && /[A-ZÁÉÍÓÚÑ]/.test(t) && t === t.toUpperCase() && !/^[\d\s.,\-/]+$/.test(t);
+    const bullet = /^([•·\-*–]|\d{1,2}[.)]|[a-z][.)])\s/.test(t);
+    if (bigGap || heading || bullet) flush();
+    if (heading) { out.push("### " + t); i++; continue; }
+    para.push(t.replace(/^[•·*–]\s*/, "- "));
+    const short = l.x1 < left + W * 0.8;
+    if (short && /[.:;!?)]$/.test(t)) flush();
+    i++;
+  }
+  flush();
+  return out.join("\n\n");
+}
+function docsToMarkdown(docs) {
+  const parts = [];
+  for (const d of docs) {
+    const P = d.pages, n = P.length, rep = new Map();
+    if (n >= 2) {
+      const cnt = new Map();
+      P.forEach(L => { const seen = new Set(); L.filter((l, idx) => edge(L, idx)).forEach(l => { const k = keyOf(l.text); if (k.length > 6 && !seen.has(k)) { seen.add(k); cnt.set(k, (cnt.get(k) || 0) + 1); } }); });
+      for (const [k, c] of cnt) if (c >= Math.max(2, Math.ceil(n * 0.5))) rep.set(k, null);
+      P.forEach(L => L.forEach((l, idx) => { const k = keyOf(l.text); if (edge(L, idx) && rep.has(k) && rep.get(k) === null) rep.set(k, l.text); }));
+    }
+    const head = [`# ${d.name}`, `> ${n} página(s). Texto extraído: no incluye firmas, sellos, fotos ni mapas.`];
+    const kept = [...rep.values()].filter(Boolean);
+    if (kept.length) head.push(`> Encabezado y pie que se repiten en las páginas (aparecen aquí una sola vez):\n${kept.map(t => "> " + t).join("\n")}`);
+    parts.push(head.join("\n"));
+    P.forEach((L, i) => {
+      const body = pageToMd(L.filter((l, idx) => !(edge(L, idx) && rep.has(keyOf(l.text)))), L.pageH);
+      parts.push((n > 1 ? `## Página ${i + 1}\n\n` : "") + (body || "_(página sin texto)_"));
+    });
+  }
+  return parts.join("\n\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
 /* ---------- vistas ---------- */
 function showHome() {
   tool = null; files = []; pages = []; lastOuts = [];
@@ -657,13 +851,13 @@ function showHome() {
 function openTool(id) {
   tool = TOOLS.find(t => t.id === id); if (!tool) return showHome();
   files = []; pages = []; lastOuts = [];
-  const acc = tool.accept === "img" ? "image/jpeg,image/png,image/webp,image/gif,image/bmp" : "application/pdf,.pdf";
+  const acc = tool.accept === "img" ? "image/jpeg,image/png,image/webp,image/gif,image/bmp" : tool.accept === "any" ? "application/pdf,.pdf,image/jpeg,image/png,image/webp,image/gif,image/bmp" : "application/pdf,.pdf";
   view.innerHTML = `<button class="back" id="back">← Todas las herramientas</button>
     <h2>${tool.name}</h2><p class="lead">${tool.desc}</p>
     <div class="bench">
       <section class="panel">
         <div class="drop" id="drop" tabindex="0" role="button">
-          <strong>${tool.accept === "img" ? "Elegí imágenes" : tool.multi ? "Elegí archivos PDF" : "Elegí un archivo PDF"}</strong>
+          <strong>${tool.accept === "img" ? "Elegí imágenes" : tool.accept === "any" ? "Elegí PDF o imágenes" : tool.multi ? "Elegí archivos PDF" : "Elegí un archivo PDF"}</strong>
           <span>o arrastralos aquí</span>
           <input type="file" id="fi" accept="${acc}" ${tool.multi ? "multiple" : ""} hidden>
         </div>
@@ -695,14 +889,15 @@ function openTool(id) {
 }
 
 async function addFiles(list) {
-  const isImg = tool.accept === "img";
-  let arr = [...list].filter(f => isImg ? /^image\//.test(f.type) : (f.type === "application/pdf" || /\.pdf$/i.test(f.name)));
-  if (!arr.length) { status(isImg ? "Esos archivos no son imágenes." : "Esos archivos no son PDF.", "err"); return; }
+  const isImg = tool.accept === "img", any = tool.accept === "any";
+  const isPdf = f => f.type === "application/pdf" || /\.pdf$/i.test(f.name), isPic = f => /^image\//.test(f.type);
+  let arr = [...list].filter(f => isImg ? isPic(f) : any ? (isPdf(f) || isPic(f)) : isPdf(f));
+  if (!arr.length) { status(isImg ? "Esos archivos no son imágenes." : any ? "Esos archivos no son PDF ni imágenes." : "Esos archivos no son PDF.", "err"); return; }
   if (!tool.multi) { files = []; arr = arr.slice(0, 1); }
   for (const f of arr) files.push({ id: uid(), name: f.name, size: f.size, type: f.type || "application/pdf", buf: await f.arrayBuffer(), n: null });
   lastOuts = []; const rb = document.getElementById("res"); rb.innerHTML = ""; rb.hidden = true; status("");
   refresh();
-  if (!isImg) for (const f of files) if (f.n === null) { f.n = await pageCount(f.buf).catch(() => "?"); refresh(); }
+  if (!isImg) for (const f of files) if (f.n === null) { f.n = /^image\//.test(f.type) ? undefined : await pageCount(f.buf).catch(() => "?"); refresh(); }
   if (tool.thumbs) buildThumbs();
 }
 
@@ -794,12 +989,12 @@ async function run() {
   if (busy) return; busy = true; refresh();
   const box = document.getElementById("res"); box.innerHTML = ""; box.hidden = true; progress(0);
   try {
-    const step = (f, m) => { progress(f); status(m || "Procesando…"); setTitle(Math.round(f * 100) + " % · "); };
+    let lastF = 0; const step = (f, m) => { if (f != null) lastF = f; progress(lastF); status(m || "Procesando…"); setTitle(Math.round(lastF * 100) + " % · "); };
     const work = () => tool.run(step);
     // Mientras haya un trabajo activo, Chrome no congela ni descarta la pestaña aunque esté minimizada.
     let outs = (navigator.locks && navigator.locks.request) ? await navigator.locks.request("taller-pdf-trabajo", work) : await work();
     setTitle(document.hidden ? "✓ Listo · " : "");
-    const copyText = outs.copyText, table = outs.table;
+    const copyText = outs.copyText, table = outs.table, stats = outs.stats, copyOpen = outs.copyOpen;
     const notes = outs.flatMap(o => o.zip ? o.zip.map(z => z.note) : [o.note]).filter(Boolean);
     if (outs.length === 1 && outs[0].zip) {
       status("Empaquetando en ZIP…");
@@ -819,7 +1014,8 @@ async function run() {
         : `<button class="dlb${o.all ? " all" : ""}" data-s="${i}"><span class="fx">${ext(o)}</span><b>${esc(o.label || o.name)}</b><span class="sz">${fmt(o.bytes.byteLength)}</span><span class="act">Descargar</span></button>`).join("")}</div>
       ${notes.length ? `<p class="note">${notes.map(esc).join("<br>")}</p>` : ""}
       ${table && table.length ? `<details class="more" open><summary>Coordenadas encontradas: ${table.length} (en CRTM05)</summary><div class="tbl"><table><thead><tr><th>#</th><th>Pág.</th><th>Origen</th><th>Este</th><th>Norte</th></tr></thead><tbody>${table.slice(0, 300).map(p => `<tr><td>${p.orden}</td><td>${p.pagina}</td><td>${esc(p.sistema)}</td><td>${p.este.toFixed(2)}</td><td>${p.norte.toFixed(2)}</td></tr>`).join("")}</tbody></table></div><p class="note">Revisalas: algún número del texto puede parecer coordenada sin serlo.</p></details>` : ""}
-      ${copyText != null ? `<details class="more"><summary>Ver texto reconocido</summary><textarea id="o-prev" rows="12" readonly>${esc(copyText)}</textarea><button class="sec" id="copy">Copiar texto</button></details>` : ""}`;
+      ${stats ? `<div class="stat"><div><span>Como PDF o imagen</span><b>≈ ${stats.before.toLocaleString("es-CR")}</b></div><div><span>Como texto</span><b>≈ ${stats.after.toLocaleString("es-CR")}</b></div><div class="win"><span>Ahorro</span><b>${stats.before ? Math.max(0, Math.round(100 - stats.after / stats.before * 100)) : 0} %</b></div><p>Tokens aproximados para Claude. El cálculo es una estimación.</p></div>` : ""}
+      ${copyText != null ? `<details class="more"${copyOpen ? " open" : ""}><summary>${copyOpen ? "Texto para pegar en la IA" : "Ver texto reconocido"}</summary><textarea id="o-prev" rows="12" readonly>${esc(copyText)}</textarea><button class="sec" id="copy">${copyOpen ? "Copiar para la IA" : "Copiar texto"}</button></details>` : ""}`;
     box.hidden = false;
     box.querySelectorAll("[data-s]").forEach(b => b.onclick = () => save(+b.dataset.s));
     const cb = document.getElementById("copy");

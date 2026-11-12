@@ -2,7 +2,7 @@
 
 Herramientas PDF gratis, sin límites de páginas y sin cuentas. Todo se procesa en el navegador: los archivos nunca se suben a ningún servidor.
 
-**Herramientas:** leer escaneados con OCR (Word, TXT, PDF buscable y coordenadas a GeoJSON en CRTM05), unir, dividir, extraer páginas, eliminar páginas, organizar con miniaturas, rotar, comprimir, PDF a JPG/PNG, imágenes a PDF, marca de agua, números de página y firma dibujada.
+**Herramientas:** preparar PDF o imágenes para IA (Markdown con tablas, menos tokens), leer escaneados con OCR (Word, TXT, PDF buscable y coordenadas a GeoJSON en CRTM05), unir, dividir, extraer páginas, eliminar páginas, organizar con miniaturas, rotar, comprimir, PDF a JPG/PNG, imágenes a PDF, marca de agua, números de página y firma dibujada.
 
 ## Uso
 
